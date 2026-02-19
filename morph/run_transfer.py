@@ -2,19 +2,28 @@
 """Transfer learning: fine-tune a pretrained MORPH model on control cells from
 a target cell-line dataset, then evaluate on held-out perturbations.
 
-Standalone usage:
+Required input files:
+  - pretrained_model:     Path to model.pt; config.json must be in the same dir. #already in MORPH repo
+  - pretrained_hvg_gene_list: .pkl (list of gene names) or .h5ad (var_names used). #already in MORPH repo
+                          Length must match pretrained config "dim".
+  - embedding_path:      .pkl with dict mapping gene name -> vector (e.g. DepMap GeneEffect). #requires download 
+  - data_path:           Target cell-line h5ad (e.g. RPE1); must have obs["gene"] and matching genes. #requires download
+  - output_dir:          Directory to write fine-tuned model, predictions.pkl, config.json.
+
+Example (run from repo root or set MORPH repo in path):
 
     python morph/run_transfer.py \\
         --pretrained_model transfer_learning/replogle_gwps_trained_model_large/model.pt \\
         --pretrained_hvg_gene_list path/to/pretrained/hvg_genes.pkl \\
+        --embedding_path path/to/depmap_gene_effect.pkl \\
         --data_path path/to/rpe1_dataset.h5ad \\
         --output_dir transfer_learning/replogle_gwps_trained_model_large/fine_tuned \\
         --device cuda:0 \\
         --ft_epochs 50 \\
         --ft_lr 1e-4
 
-Held-out perturbations default to the standard RPE1 essential test set; override
-with --held_out_perts (comma-separated list).
+Optional: --held_out_perts (comma-separated list).
+Default is the built-in RPE1 essential test set.
 """
 from __future__ import annotations
 
