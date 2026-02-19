@@ -58,7 +58,13 @@ def train_validate(
 
     if log:
         project_name = f'{model}_{opts.dataset_name}_{opts.leave_out_test_set_id}'
-        wandb.init(project=project_name, name=savedir.split('/')[-1])  #name should be the run time after fixing the os.makedirs bug
+        wandb.init(project=project_name, name=savedir.split('/')[-1])
+        wandb.define_metric("batch_step")
+        wandb.define_metric("epoch")
+        wandb.define_metric("batch/*", step_metric="batch_step")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("val/*", step_metric="epoch")
+        global_batch_step = 0
     
     if model == 'MORPH':
         mvae = MORPH(
@@ -207,23 +213,30 @@ def train_validate(
                 klAv = 0
 
             if log:
-                wandb.log({'loss':loss})
-                wandb.log({'mmd_loss':mmd_loss})
-                wandb.log({'recon_loss':recon_loss})
-                wandb.log({'kl_loss':kl_loss})
+                wandb.log({
+                    'batch_step': global_batch_step,
+                    'batch/loss': loss,
+                    'batch/mmd_loss': mmd_loss,
+                    'batch/recon_loss': recon_loss,
+                    'batch/kl_loss': kl_loss,
+                })
+                global_batch_step += 1
 
         print('Epoch '+str(epoch)+': Loss='+str(lossAv/ct)+', '+'MMD='+str(mmdAv/ct)+', '+'MSE='+str(reconAv/ct)+', '+'KL='+str(klAv/ct))
         
+        epoch_metrics = {}
         if log:
-            wandb.log({'epoch avg loss': lossAv/ct})
-            wandb.log({'epoch avg mmd_loss': mmdAv/ct})
-            wandb.log({'epoch avg recon_loss': reconAv/ct})
-            wandb.log({'epoch avg kl_loss': klAv/ct})
-            wandb.log({'alpha': alpha_schedule[epoch]})
-            wandb.log({'beta': beta_schedule[epoch]})
-            wandb.log({'Gamma1': opts.Gamma1})
-            wandb.log({'Gamma2': opts.Gamma2})
-            wandb.log({'Epoch:': epoch})
+            epoch_metrics.update({
+                'epoch': epoch,
+                'train/loss': lossAv / ct,
+                'train/mmd_loss': mmdAv / ct,
+                'train/recon_loss': reconAv / ct,
+                'train/kl_loss': klAv / ct,
+                'train/alpha': alpha_schedule[epoch],
+                'train/beta': beta_schedule[epoch],
+                'train/Gamma1': opts.Gamma1,
+                'train/Gamma2': opts.Gamma2,
+            })
         
         if opts.mxBeta >= 1:
             if (mmdAv + reconAv + klAv)/ct < min_train_loss:
@@ -231,16 +244,16 @@ def train_validate(
                 best_model = deepcopy(mvae)
                 torch.save(best_model, os.path.join(savedir, 'best_model.pt'))
                 if log:
-                    wandb.log({'min_train_loss': min_train_loss})
-                    wandb.log({'min_train_epoch': epoch})
+                    epoch_metrics['train/min_loss'] = min_train_loss
+                    epoch_metrics['train/min_epoch'] = epoch
         else:
             if (mmdAv + reconAv)/ct < min_train_loss:
                 min_train_loss = (mmdAv + reconAv)/ct 
                 best_model = deepcopy(mvae)
                 torch.save(best_model, os.path.join(savedir, 'best_model.pt'))
                 if log:
-                    wandb.log({'min_train_loss': min_train_loss})
-                    wandb.log({'min_train_epoch': epoch})
+                    epoch_metrics['train/min_loss'] = min_train_loss
+                    epoch_metrics['train/min_epoch'] = epoch
         
         # Validation loop (validation - for early stopping and save best model)
         mvae.eval()  # Set the model to evaluation mode
@@ -302,47 +315,45 @@ def train_validate(
                 else:
                     val_klAv = 0
 
-            # Log validation results
             print('Validation - Epoch ' + str(epoch) + ': Loss=' + str(val_lossAv / val_ct) + ', MMD=' + str(val_mmdAv / val_ct) + ', MSE=' + str(val_reconAv / val_ct) + ', KL=' + str(val_klAv / val_ct))
 
             if log:
-                wandb.log({'epoch avg val_loss': val_lossAv / val_ct})
-                wandb.log({'epoch avg val_mmd_loss': val_mmdAv / val_ct})
-                wandb.log({'epoch avg val_recon_loss': val_reconAv / val_ct})
-                wandb.log({'epoch avg val_kl_loss': val_klAv / val_ct})
+                epoch_metrics.update({
+                    'val/loss': val_lossAv / val_ct,
+                    'val/mmd_loss': val_mmdAv / val_ct,
+                    'val/recon_loss': val_reconAv / val_ct,
+                    'val/kl_loss': val_klAv / val_ct,
+                })
             
             if opts.mxBeta >= 1: 
                 if (val_mmdAv + val_reconAv + val_klAv)/val_ct < min_val_loss:
                     min_val_loss = (val_mmdAv + val_reconAv + val_klAv)/val_ct 
                     best_model_val = deepcopy(mvae)
                     torch.save(best_model_val, os.path.join(savedir, 'best_model_val.pt'))
-                    patience = 0  # Reset patience since we have a new minimum validation loss
+                    patience = 0
                     if log:
-                        wandb.log({'min_val_loss': min_val_loss})
-                        wandb.log({'min_val_epoch': epoch})
+                        epoch_metrics['val/min_loss'] = min_val_loss
+                        epoch_metrics['val/min_epoch'] = epoch
                 else:
                     patience += 1
             else:
-                # reconstruction + MMD
                 if (val_mmdAv + val_reconAv)/val_ct < min_val_loss:
                     min_val_loss = (val_mmdAv + val_reconAv)/val_ct 
                     best_model_val = deepcopy(mvae)
                     torch.save(best_model_val, os.path.join(savedir, 'best_model_val.pt'))
                     patience = 0
                     if log:
-                        wandb.log({'min_val_loss': min_val_loss})
-                        wandb.log({'min_val_epoch': epoch})
+                        epoch_metrics['val/min_loss'] = min_val_loss
+                        epoch_metrics['val/min_epoch'] = epoch
                 else:
                     patience += 1
             
             if log:
-                wandb.log({'patience': patience})
+                epoch_metrics['val/patience'] = patience
+                wandb.log(epoch_metrics)
 
-            # Early stopping check
             if patience >= tolerance:
                 print(f"Early stopping on epoch {epoch}. No improvement in validation loss for {tolerance} rounds.")
-                if log:
-                    wandb.log({'early_stopping_epoch': epoch})
                 break
         
         mvae.train()  # Set the model back to training mode
@@ -352,7 +363,7 @@ def train_validate(
     total_time = end_time - start_time
     print(f"Training completed in {total_time} seconds.")
     if log:
-        wandb.log({'total_time': total_time})
+        wandb.log({'train/total_time': total_time})
     last_model = deepcopy(mvae)
     torch.save(last_model, os.path.join(savedir, 'last_model.pt'))
     

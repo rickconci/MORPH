@@ -1,9 +1,13 @@
+import os
 import pickle
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 import scanpy as sc
 import pandas as pd
+import time
+
+from config import resolve_scdata_paths_df
 
 
 class SCDataset(Dataset):
@@ -27,13 +31,16 @@ class SCDataset(Dataset):
                 representation_type=None, representation_type_2=None, representation_type_3=None,
                 gene_embs=None, gene_embs_2=None, gene_embs_3=None,
                 min_counts=32,
-                random_seed=12):
+                random_seed=12,
+                use_hvg=False,
+                n_top_genes=5000):
         super(Dataset, self).__init__()
         
         self.seed = random_seed
 
-        # Load perturbation embeddings if not provided
+        # Load perturbation embeddings if not provided (paths resolved via MORPH_DATA_ROOT from .env)
         embedding_file_df = pd.read_csv(f'{base_dir}/data/perturb_embed_file_path.csv')
+        embedding_file_df = resolve_scdata_paths_df(embedding_file_df)
         if gene_embs is None:
             gene_embs = self.load_embedding(embedding_file_df, dataset_name, representation_type)
         if gene_embs_2 is None and representation_type_2 is not None:    
@@ -44,9 +51,49 @@ class SCDataset(Dataset):
         # Get the list of perturbation targets leave out for testing
         ptb_leave_out_list = leave_out_test_set
         
-        # Filter out the perturbation targets with counts < min_counts
+        # Load adata
         adata = sc.read_h5ad(adata_path)
         print('Loaded adata from: ', adata_path)
+
+        # Optionally subset to highly variable genes (expects raw counts input)
+        if use_hvg:
+            if hasattr(adata.X, 'toarray'):
+                adata.X = adata.X.toarray()
+            adata.X = np.asarray(adata.X, dtype=np.float32)
+
+            # QC: remove cells with zero total counts (avoids 0/0 in normalize_total)
+            totals = np.array(adata.X.sum(axis=1)).flatten()
+            keep = totals > 0
+            if (~keep).any():
+                n_removed = (~keep).sum()
+                adata = adata[keep].copy()
+                print('QC: removed %d cells with zero total counts (kept %d)' % (n_removed, adata.shape[0]))
+
+            hvg_cache_dir = os.path.join(base_dir, 'data', 'hvg_cache')
+            adata_stem = os.path.splitext(os.path.basename(adata_path))[0]
+            hvg_cache_path = os.path.join(hvg_cache_dir, f'{adata_stem}_n{n_top_genes}.pkl')
+
+            # Standard scanpy preprocessing: normalize → log1p
+            sc.pp.normalize_total(adata)
+            sc.pp.log1p(adata)
+
+            if os.path.isfile(hvg_cache_path):
+                with open(hvg_cache_path, 'rb') as f:
+                    hvg_genes = pickle.load(f)
+                genes_in_adata = [g for g in hvg_genes if g in adata.var_names]
+                adata = adata[:, genes_in_adata].copy()
+                print('Loaded HVG from cache: %s (%d genes)' % (hvg_cache_path, adata.shape[1]))
+            else:
+                print('Identifying HVGs...')
+                time_start = time.time()
+                sc.pp.highly_variable_genes(adata, n_top_genes=n_top_genes, subset=True)
+                print('Computed HVG and subset: n_top_genes=%d, %d genes' % (n_top_genes, adata.shape[1]))
+                print('Time taken: %.1f seconds' % (time.time() - time_start))
+                os.makedirs(hvg_cache_dir, exist_ok=True)
+                with open(hvg_cache_path, 'wb') as f:
+                    pickle.dump(adata.var_names.tolist(), f, protocol=pickle.HIGHEST_PROTOCOL)
+                print('Saved HVG list to: ', hvg_cache_path)
+        # Filter out the perturbation targets with counts < min_counts
         gene_counts = adata.obs['gene'].value_counts()
         gene_counts = gene_counts[gene_counts >= min_counts]
         print('Length of raw ptb_leave_out_list: ', len(ptb_leave_out_list))

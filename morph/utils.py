@@ -64,7 +64,9 @@ def get_data(opts):
                         representation_type=representation_type, representation_type_2=representation_type_2,
                         representation_type_3=representation_type_3,
                         min_counts=min_counts,
-                        random_seed=random_seed)
+                        random_seed=random_seed,
+                        use_hvg=getattr(opts, 'use_hvg', False),
+                        n_top_genes=getattr(opts, 'n_top_genes', 5000))
     ptb_leave_out_list = dataset.ptb_leave_out_list
     print('Generated dataset')
     print('Getting train and validation indices')

@@ -48,7 +48,9 @@ def evaluate_single_model(model, savedir, device, use_index=True, infer_data=Non
                             representation_type_3=config['label_3'],
                             gene_embs=gene_embs,
                             min_counts=config['batch_size'],
-                            random_seed=config['seed'])
+                            random_seed=config['seed'],
+                            use_hvg=config.get('use_hvg', False),
+                            n_top_genes=config.get('n_top_genes', 5000))
         
         # Check that the saved ptb_leave_out_list is the same as the one in the dataset
         assert(set(ptb_leave_out_list) == set(dataset.ptb_leave_out_list)), 'Error: ptb_leave_out_list does not match the ptb targets in the dataset'

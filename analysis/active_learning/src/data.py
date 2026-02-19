@@ -12,6 +12,7 @@ filterwarnings('ignore')
 current_dir = os.path.dirname(os.path.abspath(__file__))
 morph_path = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'morph'))
 sys.path.append(morph_path)
+from config import resolve_scdata_paths_df
 from utils import SCDATA_sampler
 from dataset import SCDataset
 from torch.utils.data import DataLoader, Subset
@@ -25,8 +26,9 @@ def get_data(opts):
     print('leave_out_test_set_id: ', opts.leave_out_test_set_id)
     ptb_leave_out_list = split_df[split_df['test_set_id'] == opts.leave_out_test_set_id]['test_set'].apply(lambda x: x.split(',')).values[0]
 
-    # Read in the single-cell data
+    # Read in the single-cell data (paths from .env MORPH_DATA_ROOT)
     scdata_file = pd.read_csv(f'{opts.path_dir}/data/scdata_file_path.csv')
+    scdata_file = resolve_scdata_paths_df(scdata_file)
     adata_path = scdata_file[scdata_file['dataset'] == opts.dataset_name]['file_path'].values[0]
     adata = sc.read_h5ad(adata_path)
     print('loading single-cell data from: ', adata_path)
@@ -42,8 +44,9 @@ def get_data(opts):
     print('All training candidates')
     print(len(training_candidates))
 
-    # read in gene_emb file
+    # read in gene_emb file (paths from .env)
     embedding_file_df = pd.read_csv(f'{opts.path_dir}/data/perturb_embed_file_path.csv')
+    embedding_file_df = resolve_scdata_paths_df(embedding_file_df)
     embedding_file_subset = embedding_file_df[embedding_file_df['representation_type']==opts.representation_type]
     embed_file = embedding_file_subset['file_path'].values[0]
     print('loading gene embeddings from', embed_file)

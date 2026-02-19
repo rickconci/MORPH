@@ -22,9 +22,10 @@ import pytorch_lightning as pl
 filterwarnings('ignore')
 current_dir = os.path.dirname(os.path.abspath(__file__))
 morph_path = os.path.abspath(os.path.join(current_dir, '..', '..', 'morph'))
-morph_main_path = os.path.abspath(os.path.join(current_dir, '..', '..'))
 sys.path.append(morph_path)
+morph_main_path = get_repo_dir()
 
+from config import get_repo_dir, resolve_scdata_paths_df
 from inference import *
 from utils import SCDATA_sampler, MMD_loss, split_scdata
 from dataset import SCDataset
@@ -58,8 +59,9 @@ output_dir = f"{savedir}/ctrl_ft/{model_name.replace('.pt', '')}_epochs_{train_e
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
-# 1. Load in single-cell data ------------------------------------------------
+# 1. Load in single-cell data (paths from .env MORPH_DATA_ROOT) ------------
 scdata_file = pd.read_csv(f'{morph_main_path}/data/scdata_file_path.csv')
+scdata_file = resolve_scdata_paths_df(scdata_file)
 adata_path = scdata_file[scdata_file['dataset'] == test_dataset]['file_path'].values[0]
 adata_test = sc.read_h5ad(adata_path)
 print('loaded adata_test:', adata_path)
@@ -95,7 +97,7 @@ test_set_list = adata_test.obs['gene'].unique().tolist()
 test_set_list.remove('non-targeting')
 print(len(test_set_list))
 
-dataset = SCDataset(base_dir = os.path.abspath(os.path.join(current_dir, '..', '..')),
+dataset = SCDataset(base_dir=morph_main_path,
                     dataset_name = test_dataset, 
                     adata_path = adata_path,
                     leave_out_test_set = test_set_list,

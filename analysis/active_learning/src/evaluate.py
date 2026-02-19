@@ -25,6 +25,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 morph_path = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'morph'))
 sys.path.append(morph_path)
 
+from config import get_repo_dir, resolve_scdata_paths_df
 from inference import *
 from utils import MMD_loss
 
@@ -63,7 +64,7 @@ def main():
     args = parser.parse_args()
 
     args.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    args.path_dir = os.path.abspath(os.path.join(args.base_dir, '..', '..'))
+    args.path_dir = get_repo_dir()
     
     torch.set_num_threads(6)
     random_seed = args.random_seed
@@ -127,8 +128,9 @@ def main():
     with open(output_dir+'/config.json') as f:
         opts = json.load(f)
 
-    # read in the single-cell data
+    # read in the single-cell data (paths from .env MORPH_DATA_ROOT)
     scdata_file = pd.read_csv(f'{args.path_dir}/data/scdata_file_path.csv')
+    scdata_file = resolve_scdata_paths_df(scdata_file)
     adata_path = scdata_file[scdata_file['dataset'] == dataset_name]['file_path'].values[0]
     adata = sc.read_h5ad(adata_path)
     print('loading single-cell data from: ', adata_path)
@@ -140,8 +142,9 @@ def main():
     mmd_to_ctrl_df = mmd_to_ctrl_df[mmd_to_ctrl_df['ptb_gene'].isin(opts['ptb_leave_out_list'])]
     mmd_to_ctrl_sigma = mmd_to_ctrl_df['mmd_sigma'].values[0]
 
-    # read in gene_emb file
+    # read in gene_emb file (paths from .env)
     embedding_file_df = pd.read_csv(f'{args.path_dir}/data/perturb_embed_file_path.csv')
+    embedding_file_df = resolve_scdata_paths_df(embedding_file_df)
     embedding_file_subset = embedding_file_df[embedding_file_df['representation_type']==args.representation_type]
     embed_file = embedding_file_subset['file_path'].values[0]
     print('loading gene embeddings from', embed_file)

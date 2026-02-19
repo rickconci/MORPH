@@ -1,0 +1,2 @@
+data,test_set_id,test_set,note
+replogie_RPE1_essential,heldout_perts,"HDAC7,CNOT3,POLR1B,RPL30,RPL17,RPS27,PHB,ZC3H13,LSM6,NACA,YTHDC1,EIF2S1,EXOSC2,RPS5,RPS15A,PRIM2,SMG5,EIF4A3",RPE1 essential held-out test perturbations

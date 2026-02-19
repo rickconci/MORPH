@@ -12,6 +12,7 @@ import glob
 
 filterwarnings('ignore')
 
+from config import get_repo_dir, get_result_dir, resolve_scdata_paths_df
 import scanpy as sc
 sc.settings.verbosity = 3
 sc.settings.set_figure_params(dpi=80, facecolor='white', frameon=False)
@@ -34,9 +35,10 @@ def main():
     parser.add_argument('--random_seed', type=int, default=12, help="Random seed")
     parser.add_argument('--device', type=str, default='cuda:4', help="Device to run on")
     parser.add_argument('--run_name', type=str, default='', help="Name of the run (if not specified, will use the most recent run)")
+    parser.add_argument('--result_dir', type=str, default=None, help="Base dir for checkpoints (must match run.py --result_dir)")
     args = parser.parse_args()
     
-    args.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    args.base_dir = get_repo_dir()
     modality = args.modality
     print('Modality:', modality)
     dataset_name = args.dataset_name
@@ -56,8 +58,9 @@ def main():
     run_name = args.run_name
     print('Run name:', run_name)
 
-    # Load single-cell data -----------------------------------
+    # Load single-cell data (paths resolved via MORPH_DATA_ROOT from .env)
     scdata_file = pd.read_csv(f'{args.base_dir}/data/scdata_file_path.csv')
+    scdata_file = resolve_scdata_paths_df(scdata_file)
     adata_path = scdata_file[scdata_file['dataset'] == args.dataset_name]['file_path'].values[0]
     adata = sc.read(adata_path)
     print('Loaded adata from ', adata_path)
@@ -68,7 +71,8 @@ def main():
         sc.tl.rank_genes_groups(adata, groupby='gene', reference='non-targeting', n_genes=50, use_raw=False, rankby_abs=True)
      
     # Load model ----------------------------------------------
-    savedir = os.path.join(f"{args.base_dir}/result", modality, dataset_name, leave_out_test_set_id)
+    result_base = args.result_dir or get_result_dir() or f"{args.base_dir}/result"
+    savedir = os.path.join(result_base, modality, dataset_name, leave_out_test_set_id)
 
     if run_name == '':
         print('No run name specified. Using the most recent run.')

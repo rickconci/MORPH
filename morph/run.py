@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import random
 
+from config import get_repo_dir, get_result_dir, resolve_scdata_paths_df
 from train import train_validate
 from utils import get_data
 
@@ -20,7 +21,7 @@ def main(args):
 	
 	opts = Namespace(
 		mode = 'train',
-		lr = 1e-4,
+		lr = args.lr,
 		grad_clip = True,
 		kernel_num = 10,
 		hidden_dim = 128,
@@ -68,9 +69,12 @@ def main(args):
 	opts.label_2 = args.label_2
 	opts.label_3 = args.label_3
 	opts.null_label = args.null_label
+	opts.use_hvg = getattr(args, 'use_hvg', False)
+	opts.n_top_genes = getattr(args, 'n_top_genes', 5000)
 
-	# get adata_path
+	# get adata_path (paths in CSV are relative to MORPH_DATA_ROOT; see .env)
 	scdata_file = pd.read_csv(f'{opts.base_dir}/data/scdata_file_path.csv')
+	scdata_file = resolve_scdata_paths_df(scdata_file)
 	opts.adata_path = scdata_file[scdata_file['dataset'] == opts.dataset_name]['file_path'].values[0]
 
 	# get leave_out_test_set
@@ -130,6 +134,7 @@ if __name__ == '__main__':
 	parser.add_argument('--epochs', type=int, default=100, help='number of epochs to run the training')
 	parser.add_argument('--tolerance_epochs', type=int, default=20, help='number of epochs to tolerate before early stopping')
 	parser.add_argument('--batch_size', type=int, default=32, help='batch size')
+	parser.add_argument('--lr', type=float, default=1e-4, help='learning rate for Adam')
 	parser.add_argument('--MMD_sigma', type=int, default=1500, help='sigma for MMD loss')
 	parser.add_argument('--mxAlpha', type=float, default=2, help='alpha for MMD loss')
 	parser.add_argument('--mxBeta', type=float, default=2, help='beta for KL loss')
@@ -141,10 +146,14 @@ if __name__ == '__main__':
 	parser.add_argument('--latdim_ptb', type=int, default=50, help='latent dimension of ptb representations')
 	parser.add_argument('--geneset_num', type=int, default=50, help='number of genesets to use in the model')
 	parser.add_argument('--geneset_dim', type=int, default=50, help='dimension of geneset embeddings')
+	parser.add_argument('--use_hvg', action='store_true', help='run sc.pp.highly_variable_genes on adata and subset (e.g. for K562_essential_norm)')
+	parser.add_argument('--n_top_genes', type=int, default=5000, help='n_top_genes when --use_hvg (ignored if adata.var has "highly_variable")')
+	parser.add_argument('--result_dir', type=str, default=None, help='Base dir for checkpoints/results (default: MORPH_RESULT_DIR or <repo>/result)')
 	args = parser.parse_args()
 
-	args.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-	args.savedir = (f"{args.base_dir}/result/{args.modality}/{args.dataset_name}/"
+	args.base_dir = get_repo_dir()
+	result_base = args.result_dir or get_result_dir() or f"{args.base_dir}/result"
+	args.savedir = (f"{result_base}/{args.modality}/{args.dataset_name}/"
 				    f"{str.lower(args.leave_out_test_set_id)}/{args.label}_{args.model}_run{int(time.time())}")
 	print('Will save results to: ', args.savedir)
 

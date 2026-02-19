@@ -1,7 +1,15 @@
 from argparse import ArgumentParser, Namespace
+import os
+import sys
+
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_morph_path = os.path.abspath(os.path.join(_current_dir, "..", "..", "..", "morph"))
+if _morph_path not in sys.path:
+    sys.path.insert(0, _morph_path)
+from config import get_repo_dir
+
 import torch
 from helpers import generate_decreasing_schedule
-import os
 import json
 from data import get_data
 from train import train
@@ -265,7 +273,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     args.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    args.path_dir = os.path.abspath(os.path.join(args.base_dir, '..', '..'))
+    args.path_dir = get_repo_dir()
 
     main(args)
     

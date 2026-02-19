@@ -1,0 +1,49 @@
+# MORPH – Modular framework for predicting responses to perturbational changes.
+# PyTorch cu128 for H100 (sm_90); torch 2.1+ required for sm_90 support.
+# Create venv with:  uv venv --python 3.10   then  uv sync
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "morph"
+version = "0.0.1"
+description = "Modular framework for predicting responses to perturbational changes (single-cell outcome of genetic perturbations)"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    # Core ML
+    "torch==2.7.1+cu128",
+    "torchvision==0.22.1+cu128",
+
+    # Scientific computing
+    "numpy>=1.26.4",
+    "scipy>=1.11.0",
+    "pandas>=2.1.0",
+    "scikit-learn>=1.3.0",
+
+    # Single-cell
+    "scanpy>=1.9.6",
+    "anndata>=0.10.0",
+
+    # Experiment tracking
+    "wandb>=0.16.0",
+
+    # Utilities
+    "tqdm>=4.65.0",
+    "pyyaml>=6.0",
+    "gdown>=5.2.1",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+
+[tool.setuptools.packages.find]
+include = ["morph", "morph.*"]
