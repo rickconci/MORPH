@@ -24,8 +24,8 @@ class SCDataset(Dataset):
         - gene_embs: Dictionary of gene embeddings (optional)
     """
     def __init__(self,
-                base_dir='./',
-                dataset_name='replogle_rpe1_hvg',
+                base_dir=None,
+                dataset_name=None,
                 adata_path=None,
                 leave_out_test_set=None,
                 representation_type=None, representation_type_2=None, representation_type_3=None,
@@ -33,20 +33,35 @@ class SCDataset(Dataset):
                 min_counts=32,
                 random_seed=12,
                 use_hvg=False,
-                n_top_genes=5000):
+                n_top_genes=5000,
+                fixed_genes=None):
         super(Dataset, self).__init__()
         
         self.seed = random_seed
 
-        # Load perturbation embeddings if not provided (paths resolved via MORPH_DATA_ROOT from .env)
-        embedding_file_df = pd.read_csv(f'{base_dir}/data/perturb_embed_file_path.csv')
-        embedding_file_df = resolve_scdata_paths_df(embedding_file_df)
-        if gene_embs is None:
-            gene_embs = self.load_embedding(embedding_file_df, dataset_name, representation_type)
-        if gene_embs_2 is None and representation_type_2 is not None:    
-            gene_embs_2 = self.load_embedding(embedding_file_df, dataset_name, representation_type_2)
-        if gene_embs_3 is None and representation_type_3 is not None:
-            gene_embs_3 = self.load_embedding(embedding_file_df, dataset_name, representation_type_3)
+        # Load perturbation embeddings from CSV only when not provided (standalone: pass gene_embs directly).
+        need_csv = (
+            (gene_embs is None and representation_type is not None)
+            or (gene_embs_2 is None and representation_type_2 is not None)
+            or (gene_embs_3 is None and representation_type_3 is not None)
+        )
+        if need_csv:
+            if base_dir is None or dataset_name is None:
+                raise ValueError(
+                    "When embeddings are not provided, base_dir and dataset_name are required "
+                    "to load them from data/perturb_embed_file_path.csv. "
+                    "For standalone use, pass gene_embs (e.g. from --embedding_path) and representation_type."
+                )
+            embedding_file_df = pd.read_csv(os.path.join(base_dir, "data", "perturb_embed_file_path.csv"))
+            embedding_file_df = resolve_scdata_paths_df(embedding_file_df)
+            if gene_embs is None and representation_type is not None:
+                gene_embs = self.load_embedding(embedding_file_df, dataset_name, representation_type)
+            if gene_embs_2 is None and representation_type_2 is not None:
+                gene_embs_2 = self.load_embedding(embedding_file_df, dataset_name, representation_type_2)
+            if gene_embs_3 is None and representation_type_3 is not None:
+                gene_embs_3 = self.load_embedding(embedding_file_df, dataset_name, representation_type_3)
+        elif gene_embs is None and representation_type is not None:
+            raise ValueError("Provide gene_embs (e.g. from --embedding_path) or base_dir+dataset_name to load embeddings.")
         
         # Get the list of perturbation targets leave out for testing
         ptb_leave_out_list = leave_out_test_set
@@ -55,8 +70,28 @@ class SCDataset(Dataset):
         adata = sc.read_h5ad(adata_path)
         print('Loaded adata from: ', adata_path)
 
+        # Subset to fixed gene set (e.g. pretrained HVG) and preprocess
+        if fixed_genes is not None:
+            if hasattr(adata.X, 'toarray'):
+                adata.X = adata.X.toarray()
+            adata.X = np.asarray(adata.X, dtype=np.float32)
+            totals = np.array(adata.X.sum(axis=1)).flatten()
+            keep = totals > 0
+            if (~keep).any():
+                adata = adata[keep].copy()
+            X = np.zeros((adata.n_obs, len(fixed_genes)), dtype=np.float32)
+            for j, g in enumerate(fixed_genes):
+                if g in adata.var_names:
+                    X[:, j] = np.asarray(adata[:, g].X.flatten())
+            adata = sc.AnnData(X, obs=adata.obs.copy(), var=pd.DataFrame(index=list(fixed_genes)))
+            sc.pp.normalize_total(adata)
+            sc.pp.log1p(adata)
+            print('Subset to fixed_genes: %d genes' % len(fixed_genes))
+
         # Optionally subset to highly variable genes (expects raw counts input)
-        if use_hvg:
+        elif use_hvg:
+            if base_dir is None:
+                raise ValueError("base_dir is required when use_hvg=True (for HVG cache).")
             if hasattr(adata.X, 'toarray'):
                 adata.X = adata.X.toarray()
             adata.X = np.asarray(adata.X, dtype=np.float32)

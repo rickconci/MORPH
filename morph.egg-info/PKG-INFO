@@ -16,6 +16,7 @@ Requires-Dist: wandb>=0.16.0
 Requires-Dist: tqdm>=4.65.0
 Requires-Dist: pyyaml>=6.0
 Requires-Dist: gdown>=5.2.1
+Requires-Dist: python-dotenv>=1.2.1
 
 # MORPH (a modular framework for predicting responses to perturbational changes)
 

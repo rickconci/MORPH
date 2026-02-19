@@ -2,11 +2,14 @@ README.md
 pyproject.toml
 setup.py
 morph/__init__.py
+morph/config.py
 morph/dataset.py
 morph/evaluate.py
 morph/inference.py
 morph/model.py
+morph/predict_morph.py
 morph/run.py
+morph/run_transfer.py
 morph/train.py
 morph/utils.py
 morph.egg-info/PKG-INFO
