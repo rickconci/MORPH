@@ -1,0 +1,83 @@
+# =============================================================================
+# MORPH transfer learning config — matches run.sh defaults for K562 → RPE1
+# =============================================================================
+#
+# Usage:
+#   python morph/run_transfer.py \
+#       --config configs/transfer_default.yaml \
+#       --embedding_path /path/to/depmap_crispr_gene_effect_processed.pkl \
+#       --source_data_path /path/to/K562_essential_normalized_hvg.h5ad \
+#       --target_data_path /path/to/rpe1_essential_raw.h5ad \
+#       --output_dir ./transfer_output
+#
+# Reuse an existing source checkpoint (skip Stage 0):
+#   python morph/run_transfer.py \
+#       --config configs/transfer_default.yaml \
+#       --embedding_path /path/to/depmap_crispr_gene_effect_processed.pkl \
+#       --source_data_path /path/to/K562_essential_normalized_hvg.h5ad \
+#       --target_data_path /path/to/rpe1_essential_raw.h5ad \
+#       --output_dir ./transfer_output \
+#       --source_run_dir ./transfer_output/source_training/MORPH_DepMap_GeneEffect_run1740000000
+
+# ---- Gene embeddings -------------------------------------------------------
+# NOTE: embedding_path is now a CLI arg (--embedding_path), not in this file.
+representation_type: DepMap_GeneEffect
+
+# ---- Model architecture ----------------------------------------------------
+model: MORPH
+hidden_dim: 128
+latdim_ctrl: 50
+latdim_ptb: 50
+geneset_num: 50
+geneset_dim: 50
+null_label: zeros # 'zeros' | 'gaussian' | 'gaussian_normalized'
+
+# ---- Preprocessing ----------------------------------------------------------
+modality: rna
+n_top_genes: 5000 # HVG selection (always enabled in this pipeline)
+
+# ---- Source training (Stage 0) ----------------------------------------------
+epochs: 100
+tolerance_epochs: 10 # early stopping patience
+batch_size: 32
+lr: 1.0e-4
+validation_set_ratio: 0.1
+validation_ood_ratio: 0.15
+
+# ---- Loss weights -----------------------------------------------------------
+MMD_sigma: 1500
+kernel_num: 10
+mxAlpha: 0 # MMD prediction loss weight schedule peak
+mxBeta: 2 # KL divergence weight schedule peak
+Gamma1: 0 # reconstruction MMD weight
+Gamma2: 2 # reconstruction MSE weight
+
+# ---- Transfer fine-tuning (Stage 1) ----------------------------------------
+ft_epochs: 50
+ft_lr: 1.0e-4
+ft_batch_size: 256
+
+# ---- Held-out perturbations (shared across source + target) ----------------
+held_out_perts:
+  - HDAC7
+  - CNOT3
+  - POLR1B
+  - RPL30
+  - RPL17
+  - RPS27
+  - PHB
+  - ZC3H13
+  - LSM6
+  - NACA
+  - YTHDC1
+  - EIF2S1
+  - EXOSC2
+  - RPS5
+  - RPS15A
+  - PRIM2
+  - SMG5
+  - EIF4A3
+
+# ---- Device & reproducibility ----------------------------------------------
+device: cuda:0
+seed: 12
