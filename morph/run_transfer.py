@@ -24,6 +24,11 @@ Reuse an existing source checkpoint (skip Stage 0):
         --target_data_path /path/to/rpe1.h5ad \\
         --output_dir ./transfer_output \\
         --source_run_dir ./transfer_output/source_training/MORPH_DepMap_GeneEffect_run1740000000
+
+Re-generate predictions only (skip Stages 0 and 1):
+
+    python morph/run_transfer.py \\
+        --predict_only ./transfer_output/transfer
 """
 from __future__ import annotations
 
@@ -112,6 +117,74 @@ def load_control_cells(
     ctrl = np.asarray(adata[ctrl_mask].X, dtype=np.float32)
     logger.info("Control cells: %d x %d", *ctrl.shape)
     return ctrl
+
+
+def load_raw_counts(
+    adata_path: str,
+    fixed_genes: list[str],
+    ctrl_label: str = "non-targeting",
+) -> tuple[np.ndarray, np.ndarray, "pd.DataFrame"]:
+    """Load raw integer counts (no normalization) aligned to ``fixed_genes``.
+
+    Returns:
+        Tuple of (ctrl_raw, all_raw_X, obs) where ctrl_raw is
+        (n_ctrl, n_fixed_genes) of raw counts, all_raw_X is
+        the full aligned matrix (n_cells, n_fixed_genes), and
+        obs is the corresponding obs DataFrame.
+    """
+    adata = sc.read_h5ad(adata_path)
+    if hasattr(adata.X, "toarray"):
+        adata.X = adata.X.toarray()
+    adata.X = np.asarray(adata.X, dtype=np.float32)
+
+    totals = adata.X.sum(axis=1)
+    keep = totals > 0
+    if (~keep).any():
+        adata = adata[keep].copy()
+
+    X = np.zeros((adata.n_obs, len(fixed_genes)), dtype=np.float32)
+    for j, g in enumerate(fixed_genes):
+        if g in adata.var_names:
+            X[:, j] = np.asarray(adata[:, g].X.flatten())
+
+    obs = adata.obs.copy()
+    ctrl_mask = obs["gene"] == ctrl_label
+    ctrl_raw = X[ctrl_mask]
+    logger.info(
+        "Raw counts loaded: %d cells x %d genes, %d control cells",
+        X.shape[0], X.shape[1], ctrl_raw.shape[0],
+    )
+    return ctrl_raw, X, obs
+
+
+def integerize_predictions(
+    pred_log: np.ndarray,
+    avg_ctrl_total: float,
+) -> np.ndarray:
+    """Convert log1p-normalized model predictions to integer counts.
+
+    Steps:
+        1. expm1 to undo log1p (gives library-size-normalized values)
+        2. Clip negatives to zero
+        3. Rescale each cell so its total equals ``avg_ctrl_total``
+        4. Round to nearest integer
+
+    Args:
+        pred_log: Model output in log1p-normalized space (n_cells, n_genes).
+        avg_ctrl_total: Target total count per cell (mean of raw control totals).
+
+    Returns:
+        Integer count matrix (n_cells, n_genes), dtype float32.
+    """
+    pred = np.expm1(pred_log)
+    pred = np.clip(pred, 0, None)
+
+    row_sums = pred.sum(axis=1, keepdims=True)
+    row_sums = np.maximum(row_sums, 1e-10)
+    pred = pred / row_sums * avg_ctrl_total
+
+    pred = np.round(pred).astype(np.float32)
+    return pred
 
 
 # ---------------------------------------------------------------------------
@@ -454,13 +527,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="End-to-end MORPH transfer: train on source, fine-tune + predict on target.",
     )
-    parser.add_argument("--config", type=str, required=True,
+    parser.add_argument("--config", type=str, default=None,
                         help="Path to YAML config (see configs/transfer_default.yaml)")
-    parser.add_argument("--embedding_path", type=str, required=True,
+    parser.add_argument("--embedding_path", type=str, default=None,
                         help="Path to gene embedding .pkl (e.g. depmap_crispr_gene_effect_processed.pkl)")
-    parser.add_argument("--source_data_path", type=str, required=True,
+    parser.add_argument("--source_data_path", type=str, default=None,
                         help="Path to source cell-line h5ad (e.g. K562)")
-    parser.add_argument("--target_data_path", type=str, required=True,
+    parser.add_argument("--target_data_path", type=str, default=None,
                         help="Path to target cell-line h5ad (e.g. RPE1)")
     parser.add_argument("--output_dir", type=str, default="./transfer_output",
                         help="Output directory (default: ./transfer_output)")
@@ -469,93 +542,153 @@ def main() -> None:
                              "Must contain best_model_val.pt, hvg_genes.pkl, config.json.")
     parser.add_argument("--no_wandb", action="store_true",
                         help="Disable wandb logging for source training")
+    parser.add_argument("--predict_only", type=str, default=None,
+                        help="Path to existing transfer dir (config.json + best_model_ft.pt). "
+                             "Skips Stages 0/1, re-runs predictions only.")
     args = parser.parse_args()
 
-    # ---- Load config ----
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    # ------------------------------------------------------------------
+    # --predict_only: load everything from the transfer dir's config.json,
+    # load the fine-tuned model, skip Stages 0/1, jump to Stage 2.
+    # ------------------------------------------------------------------
+    if args.predict_only:
+        transfer_dir = os.path.abspath(args.predict_only)
+        cfg_path = os.path.join(transfer_dir, "config.json")
+        if not os.path.isfile(cfg_path):
+            parser.error(f"No config.json found in {transfer_dir}")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
 
-    device = torch.device(cfg.get("device", "cuda:0"))
-    seed = cfg.get("seed", 12)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+        device = torch.device(cfg.get("device", "cuda:0"))
+        seed = cfg.get("seed", 12)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
 
-    output_dir = os.path.abspath(args.output_dir)
-    source_runs_dir = os.path.join(output_dir, "source_training")
-    transfer_dir = os.path.join(output_dir, "transfer")
-    os.makedirs(source_runs_dir, exist_ok=True)
-    os.makedirs(transfer_dir, exist_ok=True)
+        target_data_path: str = cfg["target_data_path"]
+        source_run_dir: str = cfg["source_run_dir"]
+        held_out_perts: list[str] = cfg["leave_out_test_set"]
+        representation_type: str = cfg.get("label", "DepMap_GeneEffect")
+        batch_size: int = cfg.get("batch_size", 32)
+        target_name = os.path.splitext(os.path.basename(target_data_path))[0]
+        source_name = os.path.splitext(os.path.basename(cfg.get("source_data_path", "")))[0]
 
-    gene_embs = load_embedding(args.embedding_path)
-    held_out_perts: list[str] = cfg.get("held_out_perts", DEFAULT_HELDOUT_PERTS)
-    representation_type: str = cfg["representation_type"]
-    batch_size: int = cfg.get("batch_size", 32)
-    n_top_genes: int = cfg.get("n_top_genes", 5000)
-    model_type: str = cfg.get("model", "MORPH")
-    source_name = os.path.splitext(os.path.basename(args.source_data_path))[0]
+        with open(os.path.join(source_run_dir, "config.json")) as f:
+            source_config = json.load(f)
 
-    source_run_dir, hvg_genes = run_stage0_source_training(
-        source_run_dir=args.source_run_dir,
-        output_dir=output_dir,
-        source_runs_dir=source_runs_dir,
-        source_data_path=args.source_data_path,
-        gene_embs=gene_embs,
-        held_out_perts=held_out_perts,
-        representation_type=representation_type,
-        batch_size=batch_size,
-        n_top_genes=n_top_genes,
-        model_type=model_type,
-        source_name=source_name,
-        cfg=cfg,
-        device=device,
-        seed=seed,
-        use_wandb=not args.no_wandb,
-    )
+        hvg_path = cfg.get("hvg_genes_path", os.path.join(source_run_dir, "hvg_genes.pkl"))
+        with open(hvg_path, "rb") as f:
+            hvg_genes: list[str] = pickle.load(f)
+        logger.info("Loaded %d HVG genes from %s", len(hvg_genes), hvg_path)
 
-    # -----------------------------------------------------------------------
-    # STAGE 1 — Fine-tune best source checkpoint on target control cells
-    # -----------------------------------------------------------------------
-    logger.info("=" * 60)
-    logger.info("STAGE 1: Fine-tuning on target control cells")
-    logger.info("=" * 60)
+        gene_embs = load_embedding(cfg["embedding_path"])
 
-    best_model_path = os.path.join(source_run_dir, "best_model_val.pt")
-    model = torch.load(best_model_path, map_location=device, weights_only=False)
-    model = model.to(device)
-    logger.info(
-        "Loaded best source checkpoint: %s (%s params)",
-        best_model_path, f"{sum(p.numel() for p in model.parameters()):,}",
-    )
+        model_path = os.path.join(transfer_dir, "best_model_ft.pt")
+        if not os.path.isfile(model_path):
+            model_path = os.path.join(transfer_dir, f"finetuned_{target_name}_model.pt")
+        model = torch.load(model_path, map_location=device, weights_only=False)
+        model = model.to(device)
+        logger.info(
+            "Loaded fine-tuned model: %s (%s params)",
+            model_path, f"{sum(p.numel() for p in model.parameters()):,}",
+        )
 
-    with open(os.path.join(source_run_dir, "config.json")) as f:
-        source_config = json.load(f)
+    # ------------------------------------------------------------------
+    # Full pipeline: Stages 0 → 1 → 2
+    # ------------------------------------------------------------------
+    else:
+        if not all([args.config, args.embedding_path, args.source_data_path, args.target_data_path]):
+            parser.error(
+                "--config, --embedding_path, --source_data_path, --target_data_path "
+                "are all required when not using --predict_only"
+            )
 
-    control_cells = load_control_cells(args.target_data_path, hvg_genes)
-    model = finetune_on_controls(
-        model,
-        control_cells,
-        device,
-        source_config,
-        epochs=cfg.get("ft_epochs", 50),
-        lr=cfg.get("ft_lr", 1e-4),
-        batch_size=cfg.get("ft_batch_size", 256),
-        savedir=transfer_dir,
-    )
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f)
 
-    target_name = os.path.splitext(os.path.basename(args.target_data_path))[0]
-    torch.save(model, os.path.join(transfer_dir, f"finetuned_{target_name}_model.pt"))
-    logger.info("Saved fine-tuned model to %s", transfer_dir)
+        device = torch.device(cfg.get("device", "cuda:0"))
+        seed = cfg.get("seed", 12)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+
+        output_dir = os.path.abspath(args.output_dir)
+        source_runs_dir = os.path.join(output_dir, "source_training")
+        transfer_dir = os.path.join(output_dir, "transfer")
+        os.makedirs(source_runs_dir, exist_ok=True)
+        os.makedirs(transfer_dir, exist_ok=True)
+
+        gene_embs = load_embedding(args.embedding_path)
+        held_out_perts = cfg.get("held_out_perts", DEFAULT_HELDOUT_PERTS)
+        representation_type = cfg["representation_type"]
+        batch_size = cfg.get("batch_size", 32)
+        n_top_genes: int = cfg.get("n_top_genes", 5000)
+        model_type: str = cfg.get("model", "MORPH")
+        source_name = os.path.splitext(os.path.basename(args.source_data_path))[0]
+        target_data_path = args.target_data_path
+
+        source_run_dir, hvg_genes = run_stage0_source_training(
+            source_run_dir=args.source_run_dir,
+            output_dir=output_dir,
+            source_runs_dir=source_runs_dir,
+            source_data_path=args.source_data_path,
+            gene_embs=gene_embs,
+            held_out_perts=held_out_perts,
+            representation_type=representation_type,
+            batch_size=batch_size,
+            n_top_genes=n_top_genes,
+            model_type=model_type,
+            source_name=source_name,
+            cfg=cfg,
+            device=device,
+            seed=seed,
+            use_wandb=not args.no_wandb,
+        )
+
+        # ---------------------------------------------------------------
+        # STAGE 1 — Fine-tune best source checkpoint on target control
+        # ---------------------------------------------------------------
+        logger.info("=" * 60)
+        logger.info("STAGE 1: Fine-tuning on target control cells")
+        logger.info("=" * 60)
+
+        best_model_path = os.path.join(source_run_dir, "best_model_val.pt")
+        model = torch.load(best_model_path, map_location=device, weights_only=False)
+        model = model.to(device)
+        logger.info(
+            "Loaded best source checkpoint: %s (%s params)",
+            best_model_path, f"{sum(p.numel() for p in model.parameters()):,}",
+        )
+
+        with open(os.path.join(source_run_dir, "config.json")) as f:
+            source_config = json.load(f)
+
+        control_cells = load_control_cells(target_data_path, hvg_genes)
+        model = finetune_on_controls(
+            model,
+            control_cells,
+            device,
+            source_config,
+            epochs=cfg.get("ft_epochs", 50),
+            lr=cfg.get("ft_lr", 1e-4),
+            batch_size=cfg.get("ft_batch_size", 256),
+            savedir=transfer_dir,
+        )
+
+        target_name = os.path.splitext(os.path.basename(target_data_path))[0]
+        torch.save(model, os.path.join(transfer_dir, f"finetuned_{target_name}_model.pt"))
+        logger.info("Saved fine-tuned model to %s", transfer_dir)
 
     # -----------------------------------------------------------------------
     # STAGE 2 — Predictions on target held-out perturbations
+    # (reached by both --predict_only and the full pipeline)
     # -----------------------------------------------------------------------
     logger.info("=" * 60)
     logger.info("STAGE 2: Predicting on target held-out perturbations")
     logger.info("=" * 60)
 
     target_dataset = SCDataset(
-        adata_path=os.path.abspath(args.target_data_path),
+        adata_path=os.path.abspath(target_data_path),
         leave_out_test_set=held_out_perts,
         fixed_genes=hvg_genes,
         representation_type=representation_type,
@@ -571,18 +704,50 @@ def main() -> None:
     )
 
     pert_name_per_cell = eval_result["perturbation_name_per_cell"]
-    perturbed_true = eval_result["perturbed_expression_ground_truth"]
-    perturbed_pred = eval_result["perturbed_expression_predicted"]
-    control_cells_eval = np.asarray(target_dataset.ctrl_samples, dtype=np.float32)
+    perturbed_pred_log = eval_result["perturbed_expression_predicted"]
+
+    # ------------------------------------------------------------------
+    # Post-processing: store everything as raw integer counts
+    #   - control & true: loaded directly from adata (no normalize/log1p)
+    #   - predicted: expm1 → rescale to avg control total → clip → round
+    # The model still trains on log1p-normalized data; this is evaluation only.
+    # ------------------------------------------------------------------
+    ctrl_raw, all_raw_X, raw_obs = load_raw_counts(
+        target_data_path, hvg_genes,
+    )
+    avg_ctrl_total = float(ctrl_raw.sum(axis=1).mean())
+    logger.info(
+        "Raw control: %d cells, avg total count (across %d HVGs): %.1f",
+        ctrl_raw.shape[0], ctrl_raw.shape[1], avg_ctrl_total,
+    )
 
     predictions: dict[str, dict[str, np.ndarray]] = {}
     for pert in sorted(set(pert_name_per_cell)):
-        mask = pert_name_per_cell == pert
+        mask_pred = pert_name_per_cell == pert
+        mask_raw = raw_obs["gene"].values == pert
+
+        n_pred = int(mask_pred.sum())
+        n_raw = int(mask_raw.sum())
+        if n_pred != n_raw:
+            logger.warning(
+                "Cell count mismatch for %s: %d predicted vs %d raw — "
+                "using raw true as-is (aggregate metrics are unaffected)",
+                pert, n_pred, n_raw,
+            )
+
+        pred_integer = integerize_predictions(perturbed_pred_log[mask_pred], avg_ctrl_total)
+
         predictions[pert] = {
-            "control": control_cells_eval,
-            "true": np.asarray(perturbed_true[mask], dtype=np.float32),
-            "predicted": np.asarray(perturbed_pred[mask], dtype=np.float32),
+            "control": ctrl_raw.astype(np.float32),
+            "true": all_raw_X[mask_raw].astype(np.float32),
+            "predicted": pred_integer,
         }
+        logger.info(
+            "  %s — true: %s, predicted: %s, ctrl: %s",
+            pert, predictions[pert]["true"].shape,
+            predictions[pert]["predicted"].shape,
+            predictions[pert]["control"].shape,
+        )
 
     out_path = os.path.join(transfer_dir, "predictions.pkl")
     payload = {
@@ -591,13 +756,13 @@ def main() -> None:
         "dataset_name": target_name,
         "source_dataset": source_name,
         "cell_type": target_name,
-        "is_log_normalized": True,
+        "is_log_normalized": False,
         "morph_run_dir": transfer_dir,
         "source_run_dir": source_run_dir,
     }
     with open(out_path, "wb") as f:
         pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-    logger.info("Saved predictions to %s", out_path)
+    logger.info("Saved predictions (raw integer counts) to %s", out_path)
 
     transfer_config = {
         **source_config,

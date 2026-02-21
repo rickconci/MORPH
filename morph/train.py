@@ -98,38 +98,43 @@ def train_validate(
     print("Training for maximum {} epochs...".format(str(opts.epochs)))
     
     ## Loss parameters
-    beta_schedule = torch.zeros(opts.epochs) # weight on the KLD
+    # Beta schedule (KL weight): start with a small positive floor to prevent
+    # unconstrained KL inflation, then ramp to mxBeta.
+    BETA_FLOOR = 0.01
+    beta_schedule = torch.full((opts.epochs,), BETA_FLOOR)
     if opts.modality == 'rna':
-        if opts.tolerance_epochs <= 10:
-            beta_schedule[:2] = 0
-            beta_schedule[2:] = torch.linspace(0,opts.mxBeta,opts.epochs-2) 
-        else:
-            beta_schedule[:10] = 0
-            beta_schedule[10:] = torch.linspace(0,opts.mxBeta,opts.epochs-10)
+        warmup_epochs = 10
+        beta_schedule[:warmup_epochs] = BETA_FLOOR
+        beta_schedule[warmup_epochs:] = torch.linspace(
+            BETA_FLOOR, opts.mxBeta, opts.epochs - warmup_epochs
+        )
     else:
-        beta_schedule[:2] = 0
-        beta_schedule[2:] = torch.linspace(0,opts.mxBeta,opts.epochs-2)
-    
-    # if 'gwps' in opts.dataset:
-    if opts.batch_size*len(dataloader) > 1e6:
-        # for large datasets, kick in the alpha sooner
-        alpha_schedule = torch.zeros(opts.epochs) # weight on the MMD
-        alpha_schedule[:] = opts.mxAlpha
+        warmup_epochs = 5
+        beta_schedule[:warmup_epochs] = BETA_FLOOR
+        beta_schedule[warmup_epochs:] = torch.linspace(
+            BETA_FLOOR, opts.mxBeta, opts.epochs - warmup_epochs
+        )
+
+    # Alpha schedule (MMD prediction weight)
+    if opts.batch_size * len(dataloader) > 1e6:
+        alpha_schedule = torch.zeros(opts.epochs)
         alpha_schedule[:1] = 0
-        alpha_schedule[1:int(opts.epochs/2)] = torch.linspace(0,opts.mxAlpha,int(opts.epochs/2)-1) 
+        alpha_schedule[1:int(opts.epochs/2)] = torch.linspace(0, opts.mxAlpha, int(opts.epochs/2)-1) 
         alpha_schedule[int(opts.epochs/2):] = opts.mxAlpha
     else:
-        alpha_schedule = torch.zeros(opts.epochs) # weight on the MMD
-        alpha_schedule[:] = opts.mxAlpha
+        alpha_schedule = torch.zeros(opts.epochs)
         alpha_schedule[:5] = 0
-        alpha_schedule[5:int(opts.epochs/2)] = torch.linspace(0,opts.mxAlpha,int(opts.epochs/2)-5) 
+        alpha_schedule[5:int(opts.epochs/2)] = torch.linspace(0, opts.mxAlpha, int(opts.epochs/2)-5) 
         alpha_schedule[int(opts.epochs/2):] = opts.mxAlpha
 
-    # Save as JSON
-    config_filename = os.path.join(savedir, 'alpha_schedule.json')
-    with open(config_filename, "w") as json_file:
-        json.dump({"alpha_schedule": alpha_schedule.tolist()}, json_file, indent=4)
-    print(f"Alpha schedule saved to {config_filename}") 
+    # Save schedules for debugging
+    schedule_path = os.path.join(savedir, 'loss_schedules.json')
+    with open(schedule_path, "w") as json_file:
+        json.dump({
+            "alpha_schedule": alpha_schedule.tolist(),
+            "beta_schedule": beta_schedule.tolist(),
+        }, json_file, indent=4)
+    print(f"Loss schedules saved to {schedule_path}") 
     
     min_train_loss = np.inf
     best_model = deepcopy(mvae)
