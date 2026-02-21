@@ -37,8 +37,8 @@ modality: rna
 n_top_genes: 5000 # HVG selection (always enabled in this pipeline)
 
 # ---- Source training (Stage 0) ----------------------------------------------
-epochs: 100
-tolerance_epochs: 10 # early stopping patience
+epochs: 150
+tolerance_epochs: 20 # early stopping patience
 batch_size: 32
 lr: 1.0e-4
 validation_set_ratio: 0.1
@@ -47,10 +47,10 @@ validation_ood_ratio: 0.15
 # ---- Loss weights -----------------------------------------------------------
 MMD_sigma: 1500
 kernel_num: 10
-mxAlpha: 0 # MMD prediction loss weight schedule peak
-mxBeta: 2 # KL divergence weight schedule peak
-Gamma1: 0 # reconstruction MMD weight
-Gamma2: 2 # reconstruction MSE weight
+mxAlpha: 1 # MMD prediction loss weight schedule peak (was 0 — prediction branch was disabled!)
+mxBeta: 0.5 # KL divergence weight schedule peak (was 2 — caused KL collapse)
+Gamma1: 0.5 # reconstruction MMD weight (distribution matching for control reconstruction)
+Gamma2: 1 # reconstruction MSE weight (was 2)
 
 # ---- Transfer fine-tuning (Stage 1) ----------------------------------------
 ft_epochs: 50

@@ -11,3 +11,4 @@ analysis/active_learning/results/
 analysis/active_learning/kernels/replogle_k562_essential_hvg
 analysis/cell_line_transfer/cell_line_transfer_few_shot_learning_raw.py
 morph/run_gwps.sh
+transfer_output/
